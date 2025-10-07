@@ -1,62 +1,50 @@
-# scraper.py
-import requests, time, json, re
+import requests
 from bs4 import BeautifulSoup
-from urllib.parse import urljoin, urlparse
+from textblob import TextBlob
+import re
 
-base_url = "https://docs.capillarytech.com/"
+def clean_text(text):
+    """Cleans extra spaces, newlines, and special characters."""
+    text = re.sub(r'\s+', ' ', text)
+    text = re.sub(r'\[[^\]]*\]', '', text)  # remove [1], [2] etc.
+    return text.strip()
 
-headers = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
-}
-
-def collect_links(start_url, domain_only=True, max_links=200):
-    res = requests.get(start_url, headers=headers, timeout=10)
-    soup = BeautifulSoup(res.text, "html.parser")
-    links = set()
-    for a in soup.find_all("a", href=True):
-        href = a["href"]
-        full = urljoin(start_url, href)
-        parsed = urlparse(full)
-        if domain_only:
-            if parsed.netloc.endswith("capillarytech.com"):
-                links.add(full.split("#")[0])  # remove fragment
-        else:
-            links.add(full.split("#")[0])
-        if len(links) >= max_links:
-            break
-    return links
-
-def extract_text_from(url):
+def scrape_and_summarize(url):
     try:
-        r = requests.get(url, headers=headers, timeout=10)
-        page = BeautifulSoup(r.text, "html.parser")
-        # collect headings and paragraphs and list items
-        parts = []
-        for tag in page.find_all(["h1","h2","h3","h4","p","li"]):
-            txt = tag.get_text(separator=" ", strip=True)
-            if txt:
-                parts.append(txt)
-        text = "\n".join(parts)
-        return text
+        headers = {"User-Agent": "Mozilla/5.0"}
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+
+        soup = BeautifulSoup(response.text, "html.parser")
+
+        # Try to find main content area
+        article = soup.find("article")
+        if article:
+            paragraphs = article.find_all("p")
+        else:
+            paragraphs = soup.find_all("p")
+
+        # Extract and clean text
+        text = " ".join([clean_text(p.get_text()) for p in paragraphs])
+        text = text[:5000]  # keep it concise for summary
+
+        if not text:
+            return "⚠️ No readable text found on the page."
+
+        # Simple summarization
+        blob = TextBlob(text)
+        sentences = blob.sentences
+
+        if len(sentences) > 5:
+            summary = " ".join(str(s) for s in sentences[:5])
+        else:
+            summary = text[:500] + "..."
+
+        return f"📄 Summary:\n{summary}"
+
+    except requests.exceptions.MissingSchema:
+        return "❌ Invalid URL format. Please include 'https://'"
+    except requests.exceptions.RequestException as e:
+        return f"🚨 Network error: {e}"
     except Exception as e:
-        print("Error fetching", url, e)
-        return ""
-
-if __name__ == "__main__":
-    print("Collecting links from homepage...")
-    links = collect_links(base_url, domain_only=True, max_links=80)
-    # ensure homepage is included
-    links.add(base_url)
-
-    pages = []
-    for i, link in enumerate(sorted(links)):
-        print(f"[{i+1}/{len(links)}] Scraping:", link)
-        txt = extract_text_from(link)
-        if txt.strip():
-            pages.append({"url": link, "text": txt})
-        time.sleep(0.6)  # be polite
-
-    with open("capillary_docs.json", "w", encoding="utf-8") as f:
-        json.dump(pages, f, ensure_ascii=False, indent=2)
-
-    print("✅ Saved capillary_docs.json with", len(pages), "pages")
+        return f"⚠️ Unexpected error: {e}"
